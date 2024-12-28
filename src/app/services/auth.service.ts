@@ -1,5 +1,7 @@
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse, HttpHeaders } from '@angular/common/http';
 import { Injectable } from '@angular/core';
+import { Router } from '@angular/router';
+import { catchError, from, Observable, switchMap, throwError } from 'rxjs';
 
 @Injectable({
   providedIn: 'root'
@@ -11,10 +13,88 @@ export class AuthService {
     clientId: 'oauth-demo',
     redirectUri: 'http://localhost:4200/callback',
     scope: 'openid profile email',
-    logoutUri : 'http://localhost:4200/logout'
+    logoutUri : 'http://localhost:4200/logout',
   };
 
-  constructor(private http: HttpClient) { }
+  private excludedUrls = [
+    '/protocol/openid-connect/token',
+    '/protocol/openid-connect/auth',
+    '/protocol/openid-connect/logout'
+  ];
+
+  public excludeUrlFromInterception(url : string){
+    for (const s of this.excludedUrls){
+      if (url.includes(s))
+        return true;
+    }
+    return false
+  }
+
+  constructor(private http: HttpClient, private router : Router) { }
+
+  getValidToken(): Observable<string> {
+    const accessToken = sessionStorage.getItem('access_token');
+    const expiryTime = sessionStorage.getItem('token_expiry');
+
+    if (!accessToken || !expiryTime) {
+      return throwError(() => new Error('No token found'));
+    }
+
+    // Check if token is expired or will expire in next 30 seconds
+    const isExpiring = parseInt(expiryTime) - new Date().getTime() < 30000;
+
+    if (isExpiring) {
+      return this.refreshToken();
+    }
+
+    return from(Promise.resolve(accessToken));
+  }
+
+  refreshToken(): Observable<string> {
+    const refreshToken = sessionStorage.getItem('refresh_token');
+    
+    if (!refreshToken) {
+      return throwError(() => new Error('No refresh token available'));
+    }
+
+    const body = new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: this.authConfig.clientId,
+      refresh_token: refreshToken
+    });
+
+    const headers = new HttpHeaders()
+      .set('Content-Type', 'application/x-www-form-urlencoded');
+
+    const tokenEndpoint = `${this.authConfig.authority}/protocol/openid-connect/token`
+    return this.http.post<any>(tokenEndpoint, body.toString(), { headers })
+      .pipe(
+        switchMap(tokens => {
+          this.storeTokens(tokens);
+          return from(Promise.resolve(tokens.access_token));
+        }),
+        catchError((error: HttpErrorResponse) => {
+          if (error.status === 400 || error.status === 401) {
+            // Refresh token is invalid or expired
+            this.clearLocalTokens();
+            this.router.navigate(['/login']);
+          }
+          return throwError(() => error);
+        })
+      );
+  }
+
+  public storeTokens(resp:any){
+    // Store tokens
+    sessionStorage.setItem('access_token', resp.access_token);
+    sessionStorage.setItem('refresh_token', resp.refresh_token);
+    sessionStorage.setItem('id_token', resp.id_token);
+    
+    // Store expiry time
+    const expiresIn = resp.expires_in;
+    const expiryTime = new Date().getTime() + expiresIn * 1000;
+    sessionStorage.setItem('token_expiry', expiryTime.toString());
+  }
 
   login() {
     const state = this.generateRandomState();
@@ -51,9 +131,7 @@ export class AuthService {
 
   getUserDetails(){
     const userEndPoint = `${this.authConfig.authority}/protocol/openid-connect/userinfo`;
-    return this.http.get(userEndPoint, {
-      headers: { 'Authorization': `Bearer ${this.getAccessToken()}` }
-    });
+    return this.http.get(userEndPoint);
   }
 
   logout(){
@@ -64,11 +142,11 @@ export class AuthService {
     window.location.href = logoutUrl;
   }
 
-  private getIdToken(){
+  getIdToken(){
     return sessionStorage.getItem('id_token')
   }
 
-  private getAccessToken(){
+  getAccessToken(){
     return sessionStorage.getItem('access_token')
   }
 
@@ -78,7 +156,7 @@ export class AuthService {
       .join('');
   }
 
-  public clearLocalTokens() {
+  clearLocalTokens() {
     // Clear all auth-related items from sessionStorage
     sessionStorage.removeItem('access_token');
     sessionStorage.removeItem('refresh_token');

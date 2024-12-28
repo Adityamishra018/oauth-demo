@@ -27,20 +27,11 @@ export class AuthCallbackComponent implements OnInit{
         this.authService.handleLoginCallback(code,state).subscribe({
           next : (resp:any) =>{
             console.log(resp)
-            // Store tokens
-            sessionStorage.setItem('access_token', resp.access_token);
-            sessionStorage.setItem('refresh_token', resp.refresh_token);
-            sessionStorage.setItem('id_token', resp.id_token);
-            
-            // Store expiry time
-            const expiresIn = resp.expires_in;
-            const expiryTime = new Date().getTime() + expiresIn * 1000;
-            sessionStorage.setItem('token_expiry', expiryTime.toString());
-            
+            this.authService.storeTokens(resp)
             this.router.navigate(['/dashboard']);
           },
           error : (err) =>{
-            console.log("Something went wrong in token exchange")
+            console.log("Something went wrong in token exchange",err)
             this.router.navigate(['/login']);
           } 
         })
